@@ -1,14 +1,16 @@
 import collections
 import numpy as np
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0=全部,1=INFO,2=WARNING,3=ERROR
 import tensorflow as tf
 import tensorflow_federated as tff
 import random
 import time
-
+from datetime import datetime
 import nest_asyncio
+from monitor import TrainingMonitor
 
 nest_asyncio.apply()
-
 np.random.seed(1000)
 
 tf.compat.v1.enable_v2_behavior()
@@ -31,7 +33,7 @@ NUM_EPOCHS = 5
 BATCH_SIZE = 20
 SHUFFLE_BUFFER = 100
 PREFETCH_BUFFER = 10
-NUM_ROUNDS_FL = 200
+NUM_ROUNDS_FL = 2 #200
 AVERAGING_MODEL = 0  # 0: 'fed_avg', 1: 'fed_prox'
 
 
@@ -160,15 +162,12 @@ def create_resnet_model():
 # Model constructor (needed to be passed to TFF, instead of a model instance)
 def model_fn():
     keras_model = create_resnet_model()
-    return tff.learning.from_keras_model(
+    return tff.learning.models.from_keras_model(
         keras_model,
         input_spec=test_data_centralized.element_spec,
         loss=tf.keras.losses.SparseCategoricalCrossentropy(),
         metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
     )
-    # More loss functions and metrics here:
-    # - https://www.tensorflow.org/api_docs/python/tf/keras/losses m
-    # - https://www.tensorflow.org/api_docs/python/tf/keras/metrics
 
 
 # Define the iterative process to be followed for training both clients and the server
@@ -190,7 +189,7 @@ iterative_process = tff.learning.algorithms.build_weighted_fed_avg(
 # Initialize the state of the FL server
 server_state = iterative_process.initialize()
 # Generate a federated evaluation object for the model
-fed_evaluation = tff.learning.build_federated_evaluation(model_fn)
+fed_evaluation = tff.learning.algorithms.build_fed_eval(model_fn)
 metric = tf.keras.metrics.SparseCategoricalAccuracy(name='test_accuracy')
 
 # Compute the size of the model, based on its parameters
@@ -199,7 +198,7 @@ number_of_model_parameters = mock_model.count_params()
 print("Number of parameters: {}".format(number_of_model_parameters))
 transaction_size = number_of_model_parameters * 4 / 1000000
 print("Model (transaction) size: {}".format(transaction_size))
-print(mock_model.summary())
+# print(mock_model.summary())
 
 mock_model.compile(
     loss=tf.keras.losses.SparseCategoricalCrossentropy(),
@@ -207,17 +206,19 @@ mock_model.compile(
 )
 
 # Define the set of experiments to be executed in terms of total number of users and percentages (Async. operation)
-NUM_CLIENTS_PER_ROUND = [100] #[10, 50, 100]
-PERCENTAGES = [1] #[0.1, 0.25, 0.5, 0.75, 1]
+NUM_CLIENTS_PER_ROUND = [10] #[10, 50, 100]
+PERCENTAGES = [0.1] #[0.1, 0.25, 0.5, 0.75, 1]
 
 # 3. TRAIN A MODEL
+eval_state = fed_evaluation.initialize()
 for m in NUM_CLIENTS_PER_ROUND:
 
     print(' + Number of clients: ' + str(m))
 
     for percentage in PERCENTAGES:
 
-        print('     - Percentage of clients participating in each round: ' + str(percentage))
+        print(f'     -{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} START  Percentage of clients participating in each round:{percentage}')
+        monitor = TrainingMonitor()
 
         train_loss = []
         train_accuracy = []
@@ -243,7 +244,7 @@ for m in NUM_CLIENTS_PER_ROUND:
             result = iterative_process.next(server_state, sampled_train_data)
             server_state = result.state
             train_metrics = result.metrics
-            print('          * Round  {}, train metrics={}'.format(round_num, train_metrics))
+            # print('          * Round  {}, train metrics={}'.format(round_num, train_metrics))
             train_time_end = time.time()
             training_time.append(train_time_end - train_time_start)
             #  - Get training metrics
@@ -257,11 +258,13 @@ for m in NUM_CLIENTS_PER_ROUND:
             sampled_test_data = [
                 test_data.create_tf_dataset_for_client(client).batch(BATCH_SIZE, drop_remainder=False)
                 for client in test_clients_ids]
-            eval_metrics = fed_evaluation(model_weights, sampled_test_data)
-            print('          * Round  {}, eval metrics={}'.format(round_num, eval_metrics))
-            eval_clients_metrics = eval_metrics['eval']
-            eval_loss.append(eval_clients_metrics['loss'])
-            eval_accuracy.append(eval_clients_metrics['sparse_categorical_accuracy'])
+            weights = iterative_process.get_model_weights(server_state)
+            eval_state = fed_evaluation.set_model_weights(eval_state, weights)
+            evaluation_output = fed_evaluation.next(eval_state, sampled_test_data)
+            test_metrics = evaluation_output.metrics
+            eval_state = evaluation_output.state
+            eval_loss.append(test_metrics['client_work']['eval']['current_round_metrics']['loss'])
+            eval_accuracy.append(test_metrics['client_work']['eval']['current_round_metrics']['sparse_categorical_accuracy'])
             # # WORKAROUND 1: USE RANDOM OTHER SAMPLES IN THE TRAINING DATASET TO USE FED_EVALUATION
             # test_clients_ids = np.random.choice(train_data.client_ids, size=10, replace=False)
             # model_weights = iterative_process.get_model_weights(state)
@@ -282,24 +285,23 @@ for m in NUM_CLIENTS_PER_ROUND:
             round_time_end = time.time()
             iteration_time.append(round_time_end - round_time_start)
 
+
+        monitor.info()
+
         # Create a final model and load the last server weights
-        final_model = create_vgg19_model()
+        final_model = create_resnet_model()
         final_model.compile(
             loss=tf.keras.losses.SparseCategoricalCrossentropy(),
             metrics=[tf.keras.metrics.SparseCategoricalAccuracy()]
         )
-        model_weights = iterative_process.get_model_weights(state)
         model_weights.assign_weights_to(final_model)
-        final_model.save('model_CIFAR_' + str(m) + '_' + str(percentage) + '.h5')  # Save the model
 
         # SAVE RESULTS
-        np.savetxt('output_cifar/train_loss_K' + str(m) + '_' + str(percentage) + '.txt',
-                   np.reshape(train_loss, (1, NUM_ROUNDS_FL)))
-        np.savetxt('output_cifar/train_accuracy_K' + str(m) + '_' + str(percentage) + '.txt',
-                   np.reshape(train_accuracy, (1, NUM_ROUNDS_FL)))
-        np.savetxt('output_cifar/eval_loss_K' + str(m) + '_' + str(percentage) + '.txt',
-                   np.reshape(eval_loss, (1, NUM_ROUNDS_FL)))
-        np.savetxt('output_cifar/eval_accuracy_K' + str(m) + '_' + str(percentage) + '.txt',
-                   np.reshape(eval_accuracy, (1, NUM_ROUNDS_FL)))
-        np.savetxt('output_cifar/iteration_time_K' + str(m) + '_' + str(percentage) + '.txt',
-                   np.reshape(iteration_time, (1, NUM_ROUNDS_FL)))
+        output_dir = f'OUTPUTS/federated_CIFAR/'
+        os.makedirs(output_dir, exist_ok=True)
+        final_model.save(f'{output_dir}model_CIFAR_{m}_{percentage}.keras')  # Save the model
+        np.savetxt(f'{output_dir}train_loss_K{m}_{percentage}.txt',    np.reshape(train_loss, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}train_accuracy_K{m}_{percentage}.txt',np.reshape(train_accuracy, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}eval_loss_K{m}_{percentage}.txt',     np.reshape(eval_loss, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}eval_accuracy_K{m}_{percentage}.txt', np.reshape(eval_accuracy, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}iteration_time_K{m}_{percentage}.txt',np.reshape(iteration_time, (1, NUM_ROUNDS_FL)))

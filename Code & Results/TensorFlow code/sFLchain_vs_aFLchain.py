@@ -1,11 +1,14 @@
 import collections
 import numpy as np
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0=全部,1=INFO,2=WARNING,3=ERROR
 import tensorflow as tf
 import tensorflow_federated as tff
 import random
 import time
-
+from datetime import datetime
 from matplotlib import pyplot as plt
+from monitor import TrainingMonitor
 
 np.random.seed(1000)
 
@@ -15,14 +18,26 @@ tf.compat.v1.graph_util.extract_sub_graph
 # 0. PARAMETERS
 
 # NUM_CLIENTS = 200
+# 用於集中式評估時，隨機抽取多少個 client 的資料作為測試集
 NUM_CLIENTS_TEST = 50
+# 每個 client 在本地訓練時，完整遍歷自己資料的次數
 NUM_EPOCHS = 5
+# 在本地訓練和評估時，每個 batch 包含多少筆樣本
 BATCH_SIZE = 20
+# 在做 shuffle() 時，維持的 buffer 大小。
+# buffer 越大，打亂程度越好，但同時也佔用更多記憶體
 SHUFFLE_BUFFER = 100
+# 在資料 pipeline 裡，預先抓取多少個 batch 到記憶體
+# 這能提高資料讀取和運算的併發，但也會佔用額外 RAM
 PREFETCH_BUFFER = 10
+# 聯邦學習整個過程要跑多少個通訊輪次（rounds）
 NUM_ROUNDS_FL = 200
 
-
+#變動參數
+NUM_CLASSES_PER_USER = 3 #每個 client dataset保留的樣本類別數
+PARTITIONS = [100, 200] #client數量
+PERCENTAGES = [0.1, 0.25, 0.5, 0.75, 1] #參與比例
+# PERCENTAGES = [1]
 # 1. METHODS
 
 
@@ -60,7 +75,6 @@ def create_keras_model():
 emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data()
 
 
-NUM_CLASSES_PER_USER = 10
 client_ids_list = []
 client_ids_list_ix = []
 
@@ -69,29 +83,25 @@ for i in range(0, len(emnist_train.client_ids)-1):
     client_ids_list.append(emnist_train.client_ids[i])
     client_ids_list_ix.append(i)
 
+# 先隨機抽 client 專屬的 class set，放進全域 dict，避免每次都重新抽
+CLIENT_ALLOWED_CLASSES = {
+    i: np.random.choice(10, NUM_CLASSES_PER_USER, replace=False).astype(np.int32)
+    for i in client_ids_list_ix
+}
 
 def create_tf_dataset_for_client_fn(client_id):
-    # Get the original client's dataset to be modified
-    client_dataset_copy = emnist_train.create_tf_dataset_for_client(
-        emnist_train.client_ids[client_id])
-    # Choose random classes to remain
-    classes_set = np.random.choice(range(0, 10), NUM_CLASSES_PER_USER, replace=False)
-    # List to store the valid samples
-    elements = []
-    # Iterate for each element in the original client's dataset
-    for sample in client_dataset_copy:
-        # Select only the samples matching with classes_set
-        if sample['label'].numpy() in classes_set:
-            elements.append({'label':sample['label'], 'pixels':sample['pixels']})
-    # Generate the dataset object for this specific cient
-    updated_dataset = tf.data.Dataset.from_generator(
-        lambda: elements, {"label": tf.int32, "pixels": tf.float32})
-    # Return the dataset
-    return updated_dataset
+    allowed = tf.constant(CLIENT_ALLOWED_CLASSES[client_id])
+    ds = emnist_train.create_tf_dataset_for_client(emnist_train.client_ids[client_id])
+
+    # tf.data 完整在圖裡運算 → 不會用到 PyFunc
+    def _keep(example):
+        return tf.reduce_any(tf.equal(example['label'], allowed))
+
+    return ds.filter(_keep)
 
 
 # Generate the new training dataset
-pruned_emnist_train = tff.simulation.datasets.ClientData.from_clients_and_fn(
+pruned_emnist_train = tff.simulation.datasets.ClientData.from_clients_and_tf_fn(
     client_ids_list_ix, create_tf_dataset_for_client_fn)
 
 # Define the ML model compliant with FL (needs a sample of the dataset to be defined)
@@ -137,33 +147,27 @@ print(np.mean(len_client_dataset_test))
 
 def model_fn():  # Model constructor (needed to be passed to TFF, instead of a model instance)
     keras_model = create_keras_model()
-    return tff.learning.from_keras_model(
-        keras_model,
-        input_spec=preprocessed_sample.element_spec,
+    # 新版 API：從 tff.learning.models 取
+    return tff.learning.models.from_keras_model(
+        keras_model=keras_model,
         loss=tf.keras.losses.SparseCategoricalCrossentropy(),
-        metrics=[tf.keras.metrics.SparseCategoricalAccuracy(),
-                 tf.keras.metrics.MeanAbsoluteError()]
+        input_spec=preprocessed_sample.element_spec,
+        metrics=[tf.keras.metrics.SparseCategoricalAccuracy()]
     )
-    # More loss functions and metrics here:
-    # - https://www.tensorflow.org/api_docs/python/tf/keras/losses m
-    # - https://www.tensorflow.org/api_docs/python/tf/keras/metrics
 
-
-fed_evaluation = tff.learning.build_federated_evaluation(model_fn)
+fed_evaluation = tff.learning.algorithms.build_fed_eval(model_fn)
 
 # Define the iterative process to be followed for training both clients and the server
 # More optimizers here: https://www.tensorflow.org/api_docs/python/tf/keras/optimizers
 LEARNING_RATE_CLIENT = 0.01
 LEARNING_RATE_SERVER = 1.00
-iterative_process = tff.learning.build_federated_averaging_process(
-    model_fn,
+iterative_process = tff.learning.algorithms.build_weighted_fed_avg(
+    model_fn=model_fn,
     client_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE_CLIENT),
     server_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE_SERVER))
 
-PARTITIONS = [200]
-PERCENTAGES = [0.75, 1]
-
 # 3. TRAIN A MODEL
+eval_state = fed_evaluation.initialize()
 for partition in PARTITIONS:
 
     print(' + Dataset size: ' + str(partition))
@@ -173,7 +177,8 @@ for partition in PARTITIONS:
 
     for percentage in PERCENTAGES:
 
-        print('     - Training percentage: ' + str(percentage))
+        print(f'     -{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} START Training percentage:{percentage}')
+        monitor = TrainingMonitor()
 
         train_loss = []
         train_accuracy = []
@@ -195,25 +200,28 @@ for partition in PARTITIONS:
             #  - Get a random sample of clients
             # participating_clients = np.random.choice(emnist_train.client_ids, size=NUM_CLIENTS)  # emnist_train.client_ids[0:NUM_CLIENTS-1]
             training_ixs = np.random.choice(subset_ix, round(partition*percentage), replace=False) #emnist_train.client_ids[0:round(partition*percentage)]
+
             train_datasets = make_federated_data(pruned_emnist_train, training_ixs)
-            # print(train_datasets)
             train_time_start = time.time()
             state, train_metrics = iterative_process.next(state, train_datasets)
             # print('  - Round  {}, train metrics={}'.format(round_num, train_metrics))
             train_time_end = time.time()
             training_time.append(train_time_end - train_time_start)
             #  - Get training metrics
-            train_loss.append(train_metrics['train']['loss'])
-            train_accuracy.append(train_metrics['train']['sparse_categorical_accuracy'])
+            train_loss.append(train_metrics['client_work']['train']['loss'])
+            train_accuracy.append(train_metrics['client_work']['train']['sparse_categorical_accuracy'])
             #  - Get test metrics
             ixes_original = []
             for i in training_ixs:
                 ixes_original.append(emnist_test.client_ids[i])
             test_datasets = make_federated_data(emnist_test, ixes_original)
-            test_metrics = fed_evaluation(state.model, test_datasets)
-            test_loss.append(test_metrics['loss'])
-            test_accuracy.append(test_metrics['sparse_categorical_accuracy'])
-            # print('  - Round  {}, test metrics={}'.format(round_num, test_metrics))
+            weights = iterative_process.get_model_weights(state)
+            eval_state = fed_evaluation.set_model_weights(eval_state, weights)
+            evaluation_output = fed_evaluation.next(eval_state, test_datasets)
+            test_metrics = evaluation_output.metrics
+            eval_state = evaluation_output.state   # 保留最新狀態
+            test_loss.append(test_metrics['client_work']['eval']['current_round_metrics']['loss'])
+            test_accuracy.append(test_metrics['client_work']['eval']['current_round_metrics']['sparse_categorical_accuracy'])
 
             # Choose another set of random clients for evaluation
             sample_random_clients_ids = random.sample(range(0, len(emnist_test.client_ids) - 1), NUM_CLIENTS_TEST)
@@ -221,20 +229,23 @@ for partition in PARTITIONS:
             for idx in sample_random_clients_ids:
                 sample_random_clients.append(emnist_test.client_ids[idx])
             eval_datasets = make_federated_data(emnist_test, sample_random_clients)
-            eval_metrics = fed_evaluation(state.model, eval_datasets)
-            eval_metrics = fed_evaluation(iterative_process.get_model_weights(state), eval_datasets)
-            # print('  - Round  {}, eval metrics={}'.format(round_num, eval_metrics))
-            eval_loss.append(eval_metrics['loss'])
-            eval_accuracy.append(eval_metrics['sparse_categorical_accuracy'])
+            evaluation_output = fed_evaluation.next(eval_state, eval_datasets)
+            eval_metrics = evaluation_output.metrics
+            eval_state = evaluation_output.state
+            eval_loss.append(eval_metrics['client_work']['eval']['current_round_metrics']['loss'])
+            eval_accuracy.append(eval_metrics['client_work']['eval']['current_round_metrics']['sparse_categorical_accuracy'])
 
             round_time_end = time.time()
             iteration_time.append(round_time_end - round_time_start)
 
+        monitor.info()
         # SAVE RESULTS
-        np.savetxt('train_loss_K' + str(partition) + '_' + str(percentage) + '.txt', np.reshape(train_loss, (1, NUM_ROUNDS_FL)))
-        np.savetxt('train_accuracy_K' + str(partition) + '_' + str(percentage) + '.txt', np.reshape(train_accuracy, (1, NUM_ROUNDS_FL)))
-        np.savetxt('test_loss_K' + str(partition) + '_' + str(percentage) + '.txt', np.reshape(test_loss, (1, NUM_ROUNDS_FL)))
-        np.savetxt('test_accuracy_K' + str(partition) + '_' + str(percentage) + '.txt', np.reshape(test_accuracy, (1, NUM_ROUNDS_FL)))
-        np.savetxt('eval_loss_K' + str(partition) + '_' + str(percentage) + '.txt', np.reshape(eval_loss, (1, NUM_ROUNDS_FL)))
-        np.savetxt('eval_accuracy_K' + str(partition) + '_' + str(percentage) + '.txt', np.reshape(eval_accuracy, (1, NUM_ROUNDS_FL)))
-        np.savetxt('iteration_time_K' + str(partition) + '_' + str(percentage) + '.txt', np.reshape(iteration_time, (1, NUM_ROUNDS_FL)))
+        output_dir = f'OUTPUTS/sync_vs_async/num_classes_{NUM_CLASSES_PER_USER}/'
+        os.makedirs(output_dir, exist_ok=True)
+        np.savetxt(f'{output_dir}train_loss_K{partition}_{percentage}.txt',     np.reshape(train_loss, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}train_accuracy_K{partition}_{percentage}.txt', np.reshape(train_accuracy, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}test_loss_K{partition}_{percentage}.txt',      np.reshape(test_loss, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}test_accuracy_K{partition}_{percentage}.txt',  np.reshape(test_accuracy, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}eval_loss_K{partition}_{percentage}.txt',      np.reshape(eval_loss, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}eval_accuracy_K{partition}_{percentage}.txt',  np.reshape(eval_accuracy, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}iteration_time_K{partition}_{percentage}.txt', np.reshape(iteration_time, (1, NUM_ROUNDS_FL)))

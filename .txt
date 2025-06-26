@@ -1,0 +1,62 @@
+# 下載並安裝 Miniconda (以 x86_64 為例)
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+# 依指示重新啟動 shell
+
+
+
+建立 Python 環境並安裝套件
+conda create -n flchain python=3.10
+conda activate flchain2
+pip install tensorflow tensorflow-federated extra-keras-datasets nest_asyncio matplotlib
+
+cd 'Code & Results/TensorFlow code'
+python sFLchain_vs_aFLchain.py
+
+pip install --upgrade pip
+pip install \
+  numpy~=1.25 \
+  typing-extensions==4.5.* \
+  "tensorflow[and-cuda]==2.14.*" \
+  tensorflow-federated==0.84.0
+
+
+✔️centalized_EMNIST.py 
+✔️centalized_EMNIST_CNN.py     
+✔️centalized_baseline.py          
+------>產出模型model_EMNIST_centralized.h5 
+
+evaluate_models_test_dataset.py
+✔️在測試集上評估model_EMNIST_centralized.h5 ------>輸出只有print但作者目前註解掉。
+
+
+
+
+federated_CIFAR.py     
+Uses TensorFlow Federated to train a model on the CIFAR‑100 federated dataset and records metrics.
+------>Outputs:
+Final federated model model_CIFAR_<clients>_<fraction>.h5.
+Training/evaluation metrics stored in output_cifar/*.txt.
+
+
+federated_FNN_EMNIST.py 
+Runs federated learning on EMNIST using either a dense network or CNN depending on SELECTED_MODEL. Results are saved after training.
+------>Outputs:
+Federated model model_EMNIST_<clients>_<fraction>.h5.
+Several metric files such as train_loss_K*.txt, test_accuracy_K*.txt, eval_accuracy_K*.txt, etc.
+
+
+federated_CNN_EMNIST.py
+Federated learning on EMNIST with a CNN model (500 rounds by default).
+------>Outputs:
+Saved CNN model model_CNN_EMNIST_<clients>_<fraction>.h5.
+Metric files prefixed with CNN_*.
+
+sFLchain_vs_aFLchain.py
+實現了同步 FL (s-FLchain) 和非同步 FL (a-FLchain) 的比較實驗。它處理 EMNIST 數據並記錄兩種方案的指標。
+------>Metric files such as train_loss_K*.txt, test_accuracy_K*.txt, eval_loss_K*.txt, and iteration_time_K*.txt.
+
+
+
+run_script_cifar.sh  run_script_mnist_cnn.sh
+model_EMNIST_centralized.h5  run_script_mnist.sh  
