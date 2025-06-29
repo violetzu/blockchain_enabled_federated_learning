@@ -35,7 +35,7 @@ NUM_ROUNDS_FL = 200
 
 #變動參數
 NUM_CLASSES_PER_USER = 3 #每個 client dataset保留的樣本類別數
-PARTITIONS = [100, 200] #client數量
+PARTITIONS = [100, 200] #client數量 [10, 50, 100, 200]
 PERCENTAGES = [0.1, 0.25, 0.5, 0.75, 1] #參與比例
 # PERCENTAGES = [1]
 # 1. METHODS
@@ -240,7 +240,7 @@ for partition in PARTITIONS:
 
         monitor.info()
         # SAVE RESULTS
-        output_dir = f'OUTPUTS/sync_vs_async/num_classes_{NUM_CLASSES_PER_USER}/'
+        output_dir = f'../OUTPUTS/output_tensorflow/sync_vs_async/num_classes_{NUM_CLASSES_PER_USER}/'
         os.makedirs(output_dir, exist_ok=True)
         np.savetxt(f'{output_dir}train_loss_K{partition}_{percentage}.txt',     np.reshape(train_loss, (1, NUM_ROUNDS_FL)))
         np.savetxt(f'{output_dir}train_accuracy_K{partition}_{percentage}.txt', np.reshape(train_accuracy, (1, NUM_ROUNDS_FL)))

@@ -25,13 +25,13 @@ NUM_EPOCHS = 5
 BATCH_SIZE = 20
 SHUFFLE_BUFFER = 50
 PREFETCH_BUFFER = 10
-NUM_ROUNDS_FL = 100  #FNN用200
+NUM_ROUNDS_FL = 100  #FNN用200 CNN100
 AVERAGING_MODEL = 0  # 0: 'fed_avg', 1: 'fed_prox'
 
 #變動參數
-NUM_CLASSES_PER_USER = 3  
-NUM_CLIENTS_PER_ROUND = [10] # Faltará 200 (1) IID during 500 iterations
-PERCENTAGES = [0.1] #[0.1, 0.25, 0.5, 0.75, 1]
+NUM_CLASSES_PER_USER = 10  
+NUM_CLIENTS_PER_ROUND = [100] # Faltará 200 (1) IID during 500 iterations  [10, 50, 100, 200]
+PERCENTAGES = [ 1] #[0.1, 0.25, 0.5, 0.75, 1]
 
 # 1. METHODS
 
@@ -279,13 +279,17 @@ for m in NUM_CLIENTS_PER_ROUND:
         model_weights.assign_weights_to(final_model)
 
         # SAVE THE RESULTS
-        output_dir = f'OUTPUTS/results_emnist/num_classes_{NUM_CLASSES_PER_USER}_{"cnn" if SELECTED_MODEL == "CNN" else "fnn"}/'
+        OUTPUTS = '../OUTPUTS/output_tensorflow/'
+        Subfolders = f'num_classes_{NUM_CLASSES_PER_USER}_{"cnn" if SELECTED_MODEL == "CNN" else "fnn"}/'
+        output_dir = f'{OUTPUTS}results_emnist/{Subfolders}/'
+        model_dir = f'{OUTPUTS}trained_models/EMNIST/{Subfolders}/'
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(model_dir, exist_ok=True)
         tag = 'CNN_' if SELECTED_MODEL == 'CNN' else ''
         final_model.save(f'{output_dir}{tag}model_EMNIST_{m}_{percentage}.keras')  # Save the model
         np.savetxt(f'{output_dir}{tag}train_loss_K{m}_{percentage}.txt',np.reshape(train_loss, (1, NUM_ROUNDS_FL)))
-        np.savetxt(f'{output_dir}test_loss_K{m}_{percentage}.txt',      np.reshape(test_loss, (1, NUM_ROUNDS_FL)))
-        np.savetxt(f'{output_dir}test_accuracy_K{m}_{percentage}.txt',  np.reshape(test_accuracy, (1, NUM_ROUNDS_FL)))
-        np.savetxt(f'{output_dir}eval_loss_K{m}_{percentage}.txt',      np.reshape(eval_loss, (1, NUM_ROUNDS_FL)))
-        np.savetxt(f'{output_dir}eval_accuracy_K{m}_{percentage}.txt',  np.reshape(eval_accuracy, (1, NUM_ROUNDS_FL)))
-        np.savetxt(f'{output_dir}iteration_time_K{m}_{percentage}.txt', np.reshape(iteration_time, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}{tag}test_loss_K{m}_{percentage}.txt',      np.reshape(test_loss, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}{tag}test_accuracy_K{m}_{percentage}.txt',  np.reshape(test_accuracy, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}{tag}eval_loss_K{m}_{percentage}.txt',      np.reshape(eval_loss, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}{tag}eval_accuracy_K{m}_{percentage}.txt',  np.reshape(eval_accuracy, (1, NUM_ROUNDS_FL)))
+        np.savetxt(f'{output_dir}{tag}iteration_time_K{m}_{percentage}.txt', np.reshape(iteration_time, (1, NUM_ROUNDS_FL)))

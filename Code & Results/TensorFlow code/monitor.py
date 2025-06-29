@@ -31,7 +31,7 @@ class TrainingMonitor:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if used is not None:
-            print(f"      -{timestamp} | 耗時：{int(mins)}分{int(secs)}秒 | Host RAM: {host_mem:.1f}MB; GPU VRAM: {used:.1f} MB / {total:.1f} MB")
+            print(f"      -{timestamp} END | 耗時：{int(mins)}分{int(secs)}秒 | Host RAM: {host_mem:.1f}MB; GPU VRAM: {used:.1f} MB / {total:.1f} MB")
         else:
-            print(f"      -{timestamp} | 耗時：{int(mins)}分{int(secs)}秒 | Host RAM: {host_mem:.1f}MB; GPU 偵測不到或無 TF 支援")
+            print(f"      -{timestamp} END | 耗時：{int(mins)}分{int(secs)}秒 | Host RAM: {host_mem:.1f}MB; GPU 偵測不到或無 TF 支援")
 

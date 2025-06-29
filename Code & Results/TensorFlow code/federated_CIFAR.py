@@ -36,6 +36,11 @@ PREFETCH_BUFFER = 10
 NUM_ROUNDS_FL = 2 #200
 AVERAGING_MODEL = 0  # 0: 'fed_avg', 1: 'fed_prox'
 
+# Define the number of classes per user (for IIDness purposes)
+NUM_CLASSES_PER_USER = 100
+# Define the set of experiments to be executed in terms of total number of users and percentages (Async. operation)
+NUM_CLIENTS_PER_ROUND = [50, 100] #[10, 50, 100]
+PERCENTAGES = [0.1, 0.25, 0.5, 0.75, 1] #[0.1, 0.25, 0.5, 0.75, 1]
 
 # # Training hyperparameters
 # flags.DEFINE_integer('rounds_per_eval', 1, 'How often to evaluate')
@@ -88,8 +93,6 @@ print(test_data)
 # train_data, test_data = tff.simulation.datasets.cifar100.load_data(cache_dir=None)
 
 
-# Define the number of classes per user (for IIDness purposes)
-NUM_CLASSES_PER_USER = 100
 client_ids_list = []
 client_ids_list_ix = []
 
@@ -205,9 +208,6 @@ mock_model.compile(
     metrics=[tf.keras.metrics.SparseCategoricalAccuracy()]
 )
 
-# Define the set of experiments to be executed in terms of total number of users and percentages (Async. operation)
-NUM_CLIENTS_PER_ROUND = [10] #[10, 50, 100]
-PERCENTAGES = [0.1] #[0.1, 0.25, 0.5, 0.75, 1]
 
 # 3. TRAIN A MODEL
 eval_state = fed_evaluation.initialize()
@@ -297,8 +297,12 @@ for m in NUM_CLIENTS_PER_ROUND:
         model_weights.assign_weights_to(final_model)
 
         # SAVE RESULTS
-        output_dir = f'OUTPUTS/federated_CIFAR/'
+        OUTPUTS = '../OUTPUTS/output_tensorflow/'
+        Subfolders = f'num_classes_{NUM_CLASSES_PER_USER}/'
+        output_dir = f'{OUTPUTS}output_tensorflow/results_cifar/'
+        model_dir = f'{OUTPUTS}trained_models/CIFAR/{Subfolders}/'
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(model_dir, exist_ok=True)
         final_model.save(f'{output_dir}model_CIFAR_{m}_{percentage}.keras')  # Save the model
         np.savetxt(f'{output_dir}train_loss_K{m}_{percentage}.txt',    np.reshape(train_loss, (1, NUM_ROUNDS_FL)))
         np.savetxt(f'{output_dir}train_accuracy_K{m}_{percentage}.txt',np.reshape(train_accuracy, (1, NUM_ROUNDS_FL)))
